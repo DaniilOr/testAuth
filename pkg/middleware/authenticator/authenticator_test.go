@@ -3,27 +3,34 @@ package authenticator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"github.com/go-chi/chi"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
-
+var ErrNoId = errors.New("No id")
 func TestAuthenticatorHTTPMux(t *testing.T) {
 	mux := http.NewServeMux()
-	authenticatorMd := Authenticator(func(ctx context.Context) (*string, error) {
-		log.Println("first")
-		id := "192.0.2.1"
-		return &id, nil
-	}, func(ctx context.Context, id *string) (interface{}, error) {
-		return "USERAUTH", nil
+	authenticatorMd := Authenticator(
+		func(ctx context.Context)(*string, error){
+			var id string
+			p_id := ctx.Value("id")
+			if p_id == ""{
+				return &id, ErrNoId
+			}
+			id = p_id.(string)
+			return &id, nil
+		}, func(ctx context.Context, id *string) (interface{}, error) {
+			if strings.Compare(*id, "0.0.0.0")==0{
+				return "USERAUTH", nil
+			}
+			return "", ErrNoAuthentication
 	})
 	mux.Handle(
 		"/get",
 		authenticatorMd(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			log.Println("second")
 			profile, err := Authentication(request.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -40,35 +47,53 @@ func TestAuthenticatorHTTPMux(t *testing.T) {
 	type args struct {
 		method string
 		path   string
+		addr string
 	}
 
 	tests := []struct {
 		name string
 		args args
-		want []byte
+		want_text []byte
+		want_status int
 	}{
-		{name: "GET", args: args{method: "GET", path: "/get"}, want: []byte("USERAUTH")},
-		// TODO: write for other methods
+		{name: "OK", args: args{method: "GET", path: "/get", addr: "0.0.0.0"}, want_text: []byte("USERAUTH"), want_status: http.StatusOK},
+		{name: "FAIL_1", args: args{method: "GET", path: "/get", addr: "0.0.0.1"}, want_text: []byte(""), want_status: http.StatusUnauthorized},
+		{name: "FAIL_2", args: args{method: "GET", path: "/get", }, want_text: []byte(""), want_status: http.StatusUnauthorized},
+
 	}
 
 	for _, tt := range tests {
 		request := httptest.NewRequest(tt.args.method, tt.args.path, nil)
 		response := httptest.NewRecorder()
+		ctx := context.WithValue(request.Context(), "id", tt.args.addr)
+		request = request.WithContext(ctx)
 		mux.ServeHTTP(response, request)
-		got := response.Body.Bytes()
-		if !bytes.Equal(tt.want, got) {
-			t.Errorf("got %s, want %s", got, tt.want)
+		got_text := response.Body.Bytes()
+		got_status := response.Code
+		if(got_status != tt.want_status){
+			t.Errorf("got %d, want %d", got_status, tt.want_status)
+		}
+		if !bytes.Equal(tt.want_text, got_text) {
+			t.Errorf("got %s, want %s", got_text, tt.want_text)
 		}
 	}
 }
 
 func TestAuthenticatorChi(t *testing.T) {
 	router := chi.NewRouter()
-	authenticatorMd := Authenticator(func(ctx context.Context) (*string, error) {
-		id := "192.0.2.1"
+	authenticatorMd := Authenticator(func(ctx context.Context)(*string, error){
+		var id string
+		p_id := ctx.Value("id")
+		if p_id == ""{
+			return &id, ErrNoId
+		}
+		id = p_id.(string)
 		return &id, nil
 	}, func(ctx context.Context, id *string) (interface{}, error) {
-		return "USERAUTH", nil
+		if strings.Compare(*id, "0.0.0.0")==0{
+			return "USERAUTH", nil
+		}
+		return "", ErrNoAuthentication
 	})
 	router.With(authenticatorMd).Get(
 		"/get",
@@ -85,82 +110,37 @@ func TestAuthenticatorChi(t *testing.T) {
 			}
 		},
 	)
-
 	type args struct {
 		method string
 		path   string
+		addr string
 	}
 
 	tests := []struct {
 		name string
 		args args
-		want []byte
+		want_text []byte
+		want_status int
 	}{
-		{name: "GET", args: args{method: "GET", path: "/get"}, want: []byte("USERAUTH")},
-		// TODO: write for other methods
+		{name: "OK", args: args{method: "GET", path: "/get", addr: "0.0.0.0"}, want_text: []byte("USERAUTH"), want_status: http.StatusOK},
+		{name: "FAIL_1", args: args{method: "GET", path: "/get", addr: "0.0.0.1"}, want_text: []byte(""), want_status: http.StatusUnauthorized},
+		{name: "FAIL_2", args: args{method: "GET", path: "/get", }, want_text: []byte(""), want_status: http.StatusUnauthorized},
+
 	}
 
 	for _, tt := range tests {
 		request := httptest.NewRequest(tt.args.method, tt.args.path, nil)
 		response := httptest.NewRecorder()
+		ctx := context.WithValue(request.Context(), "id", tt.args.addr)
+		request = request.WithContext(ctx)
 		router.ServeHTTP(response, request)
-		got := response.Body.Bytes()
-		if !bytes.Equal(tt.want, got) {
-			t.Errorf("got %s, want %s", got, tt.want)
+		got_text := response.Body.Bytes()
+		got_status := response.Code
+		if(got_status != tt.want_status){
+			t.Errorf("got %d, want %d", got_status, tt.want_status)
 		}
-	}
-}
-
-func TestAuthenticatorHTTPMuxError(t *testing.T) {
-	mux := http.NewServeMux()
-	authenticatorMd := Authenticator(func(ctx context.Context) (*string, error) {
-		id := "192.0.2.1"
-		return &id, nil
-	}, func(ctx context.Context, id *string) (interface{}, error) {
-		if strings.Compare(*id, "0.0.0.0")==0{
-			return "USERAUTH", nil
-		}
-		return "", ErrNoAuthentication
-	})
-	mux.Handle(
-		"/get",
-		authenticatorMd(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			log.Println("second")
-			profile, err := Authentication(request.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			data := profile.(string)
-
-			_, err = writer.Write([]byte(data))
-			if err != nil {
-				t.Fatal(err)
-			}
-		})),
-	)
-
-	type args struct {
-		method string
-		path   string
-	}
-
-	tests := []struct {
-		name string
-		args args
-		want int
-	}{
-		{name: "GET", args: args{method: "GET", path: "/get"}, want: http.StatusUnauthorized},
-		// TODO: write for other methods
-	}
-
-	for _, tt := range tests {
-		request := httptest.NewRequest(tt.args.method, tt.args.path, nil)
-		response := httptest.NewRecorder()
-		mux.ServeHTTP(response, request)
-		got := response.Code
-		log.Println(got)
-		if tt.want != got {
-			t.Errorf("got %d, want %d", got, tt.want)
+		if !bytes.Equal(tt.want_text, got_text) {
+			t.Errorf("got %s, want %s", got_text, tt.want_text)
 		}
 	}
 }
